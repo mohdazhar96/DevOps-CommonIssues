@@ -1,0 +1,77 @@
+================================================================================
+                  RANCHER + RKE2 Calico Flexvol Driver Issue
+================================================================================
+
+Title:     Calico-node Pod Stuck in PodInitializing – flexvol-driver Init Container Fails (Exit Code 127) 
+Author:    Azhar
+
+─────────────────────────────── Symptoms ────────────────────────────────
+
+• calico-node pod (e.g. calico-node-xxxxx) stuck in PodInitializing phase in rancher v1.34.3+rke2rX version
+• Init containers failing: install-cni, flexvol-driver, sometimes ebpf-bootstrap
+• flexvol-driver container crashes with **Exit Code 127** (command not found / binary missing)
+  - Typical log hint: architecture mismatch or "exec format error" / binary not present
+• Node architecture likely arm64/aarch64 (e.g., AWS Graviton, ARM servers)
+• kubectl describe pod shows: "flexvol-driver" waiting or CrashLoopBackOff
+• Related errors in logs: shared library missing (libpcap), or upstream Calico arm64 bugs
+
+─────────────────────────────── Root Cause ────────────────────────────────
+
+Flexvol-driver init container in Calico (used for dynamic volume mounting in some setups) lacks proper support or binary for arm64 architecture in certain RKE2/Calico versions.
+
+Common in:
+- Older RKE2 releases (e.g., around 1.28.x) on arm64
+- Upstream Calico issues (e.g., projectcalico/calico#8407 – fixed in later Calico v3.27+)
+- RKE2 bundles Calico chart/images without full multi-arch (arm64) support for flexvol in problematic versions
+- Exit 127 = executable not found for the node's arch (amd64 binary pulled on arm64 node, or vice versa)
+
+─────────────────────────────── What I Tried (Didn't Fully Fix) ────────────────────────────────
+
+• Checked node arch: uname -m → aarch64/arm64
+• Inspected pod logs: kubectl logs <pod> -c flexvol-driver -n kube-system
+• Tried disabling flexvol (edit Calico config: flexvolDriverInstall: false)
+• Upgraded/downgraded Calico chart manually
+→ Still failed due to bundled version mismatch in RKE2
+
+─────────────────────────────── SOLUTION THAT WORKED ────────────────────────────────
+
+**Recreated the entire cluster from Rancher UI using a stable RKE2 version with better Calico/flexvol arm64 compatibility:**
+
+Target k8s version: **v1.34.2+rke2rX** (specifically selected 1.34.2 in Rancher UI during cluster creation instead of v1.34.3+rke2rX)
+
+Steps:
+1. In Rancher UI → Clusters → Create → RKE2 → Custom (or your provider)
+   - Set Kubernetes Version: v1.34.2 (or the exact patch like v1.34.2+rke2r1)
+   - Configure networking: Keep Calico (default) or adjust if needed
+   - Complete creation and get registration commands
+
+2. Register nodes using the new UI-provided commands (clean nodes first if reusing hardware):
+   - Control-plane/etcd: --etcd --controlplane
+   - Workers: no extra flags
+
+3. Wait for provisioning → calico-node pods go Running
+   - kubectl get pods -n kube-system | grep calico
+   - No more flexvol Exit 127
+
+Why it worked: v1.34.2 bundles a newer Calico version (around v3.30–v3.31) with improved/fixed arm64 support for flexvol-driver and multi-arch images.
+
+─────────────────────────────── Alternatives / Best Practices ────────────────────────────────
+
+• Switch CNI: Use Canal (default) or Cilium instead of pure Calico if flexvol not needed
+• Disable flexvol explicitly in Rancher UI (Edit Cluster → Networking → Calico options)
+• For arm64: Prefer RKE2 1.34+ series (better multi-arch Calico support post-1.28/1.30 bugs)
+• Monitor RKE2 release notes for Calico bumps (e.g., v3.31 in v1.34.x)
+• If persistent: Check upstream https://github.com/projectcalico/calico/issues for arm64/flexvol
+
+─────────────────────────────── References ────────────────────────────────
+
+- GitHub: rancher/rke2 #5663 (Calico-node crash on ARM64 v1.28.8)
+- GitHub: projectcalico/calico #8407 (upstream flexvol fix in v3.27.3)
+- RKE2 Docs: https://docs.rke2.io/known_issues (Calico notes)
+- Search: "Calico flexvol-driver Exit Code 127 arm64 RKE2"
+
+Saved: January 31, 2026 – Azhar
+
+================================================================================
+                           END OF NOTE – FIXED!
+================================================================================

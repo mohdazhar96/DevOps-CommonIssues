@@ -1,0 +1,49 @@
+================================================================================
+               RKE2 Custom Cluster in Rancher: "Waiting for Node Ref" Stuck
+================================================================================
+
+Title:    Custom RKE2 cluster nodes stuck in "Waiting for Node Ref" in Rancher UI
+Author:   Azhar
+
+──────────────────────────── Symptoms ─────────────────────────────
+
+- Worker nodes (and sometimes others) permanently stuck at "Waiting for Node Ref" in Rancher UI
+- rancher-system-agent logs show repeated TLS errors:
+  • tls: failed to verify certificate: x509: certificate signed by unknown authority
+  • Falls back to removing CA data and retrying
+- Occasional fatal error:
+  • "error while connecting to Kubernetes cluster with nullified CA data: the server has asked for the client to provide credentials"
+- rke2-server.service never starts on control-plane nodes
+- No kubelet log appears: /var/lib/rancher/rke2/agent/logs/kubelet.log is missing
+
+──────────────────────────── Initial (Incorrect) Assumptions ─────────────────────────────
+
+Spent hours debugging as a certificate / TLS issue:
+- Verified Rancher certificate chain (openssl s_client)
+- Added CA to node trust store
+- Used --insecure during registration
+- Experimented with --ca-checksum flag (add/remove)
+→ None resolved the hang → TLS warnings were mostly noise
+
+──────────────────────────── Actual Root Cause ─────────────────────────────
+
+Rancher-managed **custom RKE2 clusters** enforce a bootstrap requirement:
+
+→ Provisioning **waits until at least one node of EACH role** is successfully registered:
+  • Control-plane
+  • Etcd
+  • Worker
+
+Registering only control-plane + etcd nodes (even with correct flags) causes indefinite waiting.
+
+Typical log message (in provisioning or agent logs):
+"waiting for at least one control plane, etcd, and worker node to be registered"
+
+──────────────────────────── Working Solution ─────────────────────────────
+
+1. Keep existing control-plane + etcd node(s) registered and ++
+2. Register **at least one dedicated worker node** (critical step!)
+
+   Worker registration command (copy directly from Rancher UI – select "Worker" only):
+
+After worker node registration this issue got resolved.
